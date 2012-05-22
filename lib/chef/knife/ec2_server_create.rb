@@ -160,6 +160,12 @@ class Chef
         :proc => Proc.new { |m| Chef::Config[:knife][:aws_user_data] = m },
         :default => nil
 
+      option :assign_eip,
+        :long => "--assign-eip",
+        :description => "Auto-assign an Elastic IP (only in VPC mode)",
+        :default => false
+
+
       def tcp_test_ssh(hostname)
         tcp_socket = TCPSocket.new(hostname, config[:ssh_port])
         readable = IO.select([tcp_socket], nil, nil, 5)
@@ -227,8 +233,21 @@ class Chef
 
         puts("\n")
 
+        elastic_ip = nil
+        if config[:assign_eip] and vpc_mode?
+          address = Fog::Compute::AWS::Address.new(
+              connection.allocate_address('vpc').body)
+          connection.associate_address(server.id, address.public_ip,
+                                       address.network_interface_id,
+                                       address.allocation_id)
+          elastic_ip = address.public_ip
+        end
+
         if vpc_mode?
           msg_pair("Subnet ID", server.subnet_id)
+          if elastic_ip
+            msg_pair("Public IP", elastic_ip)
+          end
         else
           msg_pair("Public DNS Name", server.dns_name)
           msg_pair("Public IP Address", server.public_ip_address)
@@ -239,6 +258,9 @@ class Chef
         print "\n#{ui.color("Waiting for sshd", :magenta)}"
 
         fqdn = vpc_mode? ? server.private_ip_address : server.dns_name
+        if config[:assign_eip] and elastic_ip
+          fqdn = elastic_ip
+        end
 
         print(".") until tcp_test_ssh(fqdn) {
           sleep @initial_sleep_delay ||= (vpc_mode? ? 40 : 10)
@@ -336,10 +358,10 @@ class Chef
       def create_server_def
         server_def = {
           :image_id => locate_config_value(:image),
-          :groups => config[:security_groups],
           :flavor_id => locate_config_value(:flavor),
           :key_name => Chef::Config[:knife][:aws_ssh_key_id],
-          :availability_zone => locate_config_value(:availability_zone)
+          :availability_zone => locate_config_value(:availability_zone),
+          :groups => config[:security_groups]
         }
         server_def[:subnet_id] = config[:subnet_id] if config[:subnet_id]
 
