@@ -165,9 +165,36 @@ class Chef
         :description => "Auto-assign an Elastic IP (only in VPC mode)",
         :default => false
 
+      option :ssh_gateway,
+        :long => "--ssh-gateway GATEWAY",
+        :description => "Use a gateway to the machine for bootstrap",
+        :default => false
 
       def tcp_test_ssh(hostname)
-        tcp_socket = TCPSocket.new(hostname, config[:ssh_port])
+        port = nil
+        gateway = nil
+        if config[:ssh_gateway]
+          require 'net/ssh/gateway'
+          userhostport = config[:ssh_gateway].split(':')
+          userhost = userhostport[0].split('@')
+
+          if userhost.length == 1
+            user = 'ubuntu'
+            host = userhost[0]
+          else
+            user = userhost[0]
+            host = userhost[1]
+          end
+          gateway = Net::SSH::Gateway.new(host, user, {
+            :port => (userhostport[1] || '22').to_i
+          })
+          port = gateway.open(hostname, config[:ssh_port])
+        end
+        if gateway
+          tcp_socket = TCPSocket.new('localhost', port)
+        else
+          tcp_socket = TCPSocket.new(hostname, config[:ssh_port])
+        end
         readable = IO.select([tcp_socket], nil, nil, 5)
         if readable
           Chef::Log.debug("sshd accepting connections on #{hostname}, banner is #{tcp_socket.gets}")
@@ -196,6 +223,9 @@ class Chef
         false
       ensure
         tcp_socket && tcp_socket.close
+        if gateway && port
+          gateway.close(port)
+        end
       end
 
       def run
@@ -263,7 +293,7 @@ class Chef
         end
 
         print(".") until tcp_test_ssh(fqdn) {
-          sleep @initial_sleep_delay ||= (vpc_mode? ? 40 : 10)
+          sleep @initial_sleep_delay ||= 10
           puts("done")
         }
 
@@ -324,6 +354,9 @@ class Chef
         bootstrap.config[:use_sudo] = true unless config[:ssh_user] == 'root'
         bootstrap.config[:template_file] = locate_config_value(:template_file)
         bootstrap.config[:environment] = config[:environment]
+        if config[:ssh_gateway]
+          bootstrap.config[:ssh_gateway] = config[:ssh_gateway]
+        end
         # may be needed for vpc_mode
         bootstrap.config[:no_host_key_verify] = config[:no_host_key_verify]
         bootstrap
