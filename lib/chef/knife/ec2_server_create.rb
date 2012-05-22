@@ -222,7 +222,7 @@ class Chef
         msg_pair("Image", server.image_id)
         msg_pair("Region", connection.instance_variable_get(:@region))
         msg_pair("Availability Zone", server.availability_zone)
-        msg_pair("Security Groups", server.groups.join(", "))
+        msg_pair("Security Groups", (server.groups || server.security_group_ids).join(", "))
         msg_pair("Tags", hashed_tags)
         msg_pair("SSH Key", server.key_name)
 
@@ -275,7 +275,7 @@ class Chef
         msg_pair("Image", server.image_id)
         msg_pair("Region", connection.instance_variable_get(:@region))
         msg_pair("Availability Zone", server.availability_zone)
-        msg_pair("Security Groups", server.groups.join(", "))
+        msg_pair("Security Groups", (server.groups || server.security_group_ids).join(", "))
         msg_pair("Tags", hashed_tags)
         msg_pair("SSH Key", server.key_name)
         msg_pair("Root Device Type", server.root_device_type)
@@ -297,6 +297,9 @@ class Chef
         end
         if vpc_mode?
           msg_pair("Subnet ID", server.subnet_id)
+          if elastic_ip
+            msg_pair("Public IP", elastic_ip)
+          end
         else
           msg_pair("Public DNS Name", server.dns_name)
           msg_pair("Public IP Address", server.public_ip_address)
@@ -355,15 +358,39 @@ class Chef
        tags
       end
 
+      def find_security_groups
+        subnet = config[:subnet_id]
+        names = config[:security_groups]
+        if subnet
+          net = connection.subnets.find { |s| s.subnet_id == subnet }
+          if net
+            names.map do |name|
+              group = connection.security_groups.find { |g|
+                g.vpc_id == net.vpc_id && name == g.name
+              }
+              group.group_id rescue name
+            end
+          else
+            names
+          end
+        else
+          names
+        end
+      end
+
       def create_server_def
         server_def = {
           :image_id => locate_config_value(:image),
           :flavor_id => locate_config_value(:flavor),
           :key_name => Chef::Config[:knife][:aws_ssh_key_id],
           :availability_zone => locate_config_value(:availability_zone),
-          :groups => config[:security_groups]
         }
         server_def[:subnet_id] = config[:subnet_id] if config[:subnet_id]
+        if vpc_mode?
+          server_def[:security_group_ids] = find_security_groups
+        else
+          server_def[:groups] = find_security_groups
+        end
 
         if Chef::Config[:knife][:aws_user_data]
           begin
